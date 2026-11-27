@@ -71,3 +71,11 @@ export async function saveChanges(changes) {
     method: 'POST', token: accessToken, body: { p_changes: changes }
   });
 }
+
+export async function exerciseIllustrations(keys) {
+  if (!keys.length) return [];
+  const filter = encodeURIComponent('in.(' + keys.join(',') + ')');
+  return request('/rest/v1/fenix_exercise_illustrations?select=exercise_key,webp_base64&exercise_key=' + filter, {
+    token: await token()
+  });
+}
