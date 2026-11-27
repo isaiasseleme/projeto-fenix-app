@@ -16,10 +16,10 @@ const illustrationDialog = document.createElement('dialog');
 illustrationDialog.className = 'illustration-dialog';
 illustrationDialog.setAttribute('aria-labelledby', 'illustration-title');
 illustrationDialog.innerHTML = '<div class="illustration-actions"><button type="button" aria-label="Fechar ilustração">Fechar</button></div>' +
-  '<h2 id="illustration-title"></h2><img alt=""><p>Ilustração do manual do Projeto Fênix.</p>';
+  '<h2 id="illustration-title"></h2><canvas role="img"></canvas><p>Ilustração do manual do Projeto Fênix.</p>';
 document.body.append(illustrationDialog);
 illustrationDialog.querySelector('button').addEventListener('click', () => illustrationDialog.close());
-illustrationDialog.addEventListener('close', () => illustrationDialog.querySelector('img').removeAttribute('src'));
+illustrationDialog.addEventListener('close', () => { illustrationDialog.querySelector('canvas').width = 0; });
 const days = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 const labels = [['treino','Treino'], ['plano','Plano'], ['hist','Histórico'], ['medidas','Medidas']];
 const measures = ['Peso (kg)', 'Cintura (cm)', 'Abdômen (cm)', 'Peitoral (cm)', 'Pelve alta (cm)', 'Quadril (cm)', 'Braço D (cm)', 'Braço E (cm)', 'Coxa D (cm)', 'Coxa E (cm)', 'Panturrilha D (cm)', 'Panturrilha E (cm)'];
@@ -110,7 +110,7 @@ function workoutScreen() {
       const finished = e.results.filter(set => set.done).length;
       const photo = illustrationKey(e.name);
       const thumbnail = api.currentUser() && photo
-        ? button('<img alt="" width="64" height="48">', 'view-illustration',
+        ? button('<canvas aria-hidden="true"></canvas>', 'view-illustration',
           'class="exercise-thumbnail" data-key="' + photo + '" data-name="' + escape(e.name) +
           '" hidden aria-label="' + escape('Ampliar ilustração de ' + e.name) + '"')
         : '';
@@ -121,6 +121,27 @@ function workoutScreen() {
     }).join('') + archivedScreen(session) +
     '<div class="actions"><button type="submit" class="primary" value="save">Salvar séries</button><button type="submit" value="attendance">' + (session.complete ? 'Desmarcar presença' : 'Registrar presença') + '</button></div></form>');
 }
+function drawIllustration(canvas, bitmap) {
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+}
+
+async function loadIllustration(key, encoded, owner) {
+  if (!/^[a-zA-Z0-9+/]+={0,2}$/.test(encoded)) return;
+  try {
+    const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/webp' }));
+    if (api.currentUser()?.id !== owner || illustrations.get(key)) {
+      bitmap.close();
+    } else {
+      illustrations.set(key, bitmap);
+    }
+  } catch {
+    // Leave the exercise usable when an illustration cannot be decoded.
+  }
+}
+
 async function showThumbnails() {
   const buttons = [...app.querySelectorAll('[data-action="view-illustration"]')];
   const owner = api.currentUser()?.id;
@@ -130,31 +151,30 @@ async function showThumbnails() {
     try {
       const rows = await api.exerciseIllustrations(keys);
       if (api.currentUser()?.id !== owner) return;
-      for (const key of keys) illustrations.set(key, null);
-      for (const row of rows) {
-        if (keys.includes(row.exercise_key) && /^[a-zA-Z0-9+/]+={0,2}$/.test(row.webp_base64)) {
-          illustrations.set(row.exercise_key, 'data:image/webp;base64,' + row.webp_base64);
-        }
+      await Promise.all(rows.filter(row => keys.includes(row.exercise_key))
+        .map(row => loadIllustration(row.exercise_key, row.webp_base64, owner)));
+      if (api.currentUser()?.id !== owner) return;
+      for (const key of keys) {
+        if (!illustrations.has(key)) illustrations.set(key, null);
       }
     } catch { return; }
   }
   for (const el of buttons) {
-    const url = illustrations.get(el.dataset.key);
-    if (!el.isConnected || !url) continue;
-    const image = el.querySelector('img');
-    image.src = url;
+    const bitmap = illustrations.get(el.dataset.key);
+    if (!el.isConnected || !bitmap) continue;
+    drawIllustration(el.querySelector('canvas'), bitmap);
     el.hidden = false;
   }
 }
 
 function openIllustration(target) {
-  const url = illustrations.get(target.dataset.key);
-  if (!url) return;
+  const bitmap = illustrations.get(target.dataset.key);
+  if (!bitmap) return;
   const { name } = target.dataset;
   illustrationDialog.querySelector('h2').textContent = name;
-  const image = illustrationDialog.querySelector('img');
-  image.alt = 'Ilustração do manual para ' + name;
-  image.src = url;
+  const canvas = illustrationDialog.querySelector('canvas');
+  canvas.setAttribute('aria-label', 'Ilustração do manual para ' + name);
+  drawIllustration(canvas, bitmap);
   illustrationDialog.showModal();
 }
 
@@ -229,6 +249,7 @@ function render() {
   app.setAttribute('aria-busy','false');
   logout.hidden = !api.currentUser();
   if (api.configured && !api.currentUser()) {
+    for (const bitmap of illustrations.values()) bitmap?.close();
     illustrations.clear();
     if (illustrationDialog.open) illustrationDialog.close();
     app.innerHTML = header('Entre no Projeto Fênix', 'SEU DIÁRIO DE TREINO') +
