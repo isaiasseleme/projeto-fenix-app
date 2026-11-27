@@ -165,3 +165,41 @@ export function updateTodaySession(session, workout, before, after) {
   });
   return { ...session, exercises, archivedExercises: archived };
 }
+
+const illustrationAliases = {
+  'supino maquina ou halteres': 'supino-maquina',
+  'supino maquina': 'supino-maquina',
+  'supino inclinado maquina ou halteres': 'supino-inclinado',
+  'supino inclinado': 'supino-inclinado',
+  'desenvolvimento sentado na maquina': 'desenvolvimento',
+  'desenvolvimento na maquina': 'desenvolvimento',
+  'triceps corda na polia': 'triceps-corda',
+  'leg press 45°': 'leg-press',
+  'afundo guiado ou passada curta': 'afundo',
+  'crunch na polia ou abdominal maquina': 'crunch-polia',
+  'agachamento no smith para caixa': 'agachamento-smith-caixa',
+  'stiff com halteres': 'stiff-halteres',
+  'hip thrust na maquina ou banco': 'hip-thrust',
+  'elevacao pelvica': 'hip-thrust',
+  'cardio continuo ou combinado': 'cardio',
+  'abdominal na maquina': 'abdominal-maquina',
+  'caminhada': 'caminhada-esteira',
+  'panturrilha': 'panturrilha-em-pe',
+  'panturrilha no leg press': 'panturrilha-leg-press',
+  'pallof press': 'pallof-press',
+  'mobilidade de ombros': 'mobilidade-ombros',
+  'mobilidade de tornozelos': 'mobilidade-tornozelos'
+};
+const illustrationKeys = new Set([
+  'elevacao-lateral', 'prancha', 'leg-press', 'cadeira-extensora', 'mesa-flexora',
+  'puxada-frontal', 'remada-baixa', 'remada-apoiada',
+  'face-pull', 'rosca-direta', 'rosca-martelo', 'cadeira-flexora', 'cadeira-abdutora',
+  'panturrilha-em-pe', 'prancha-lateral'
+]);
+
+export function illustrationKey(name) {
+  const normalized = searchText(name);
+  if (Object.hasOwn(illustrationAliases, normalized)) return illustrationAliases[normalized];
+  const slug = normalized.replace(/\s+/g, '-');
+  return illustrationKeys.has(slug) ? slug : null;
+}
