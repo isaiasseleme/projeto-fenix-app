@@ -1,4 +1,4 @@
-import { workouts, fullBody, phases, planFor, dateKey, week, counts } from './plan.js';
+import { workouts, fullBody, phases, planFor, dateKey, week, counts, findExercises, identifyExercises, newExercise, editExercises, startExercise, updateTodaySession } from './plan.js';
 import * as api from './api.js';
 
 const app = document.querySelector('#app');
@@ -9,6 +9,8 @@ let page = 'treino';
 let selectedDate = dateKey();
 let workoutId;
 let busy = false;
+let planOpen;
+let editor;
 const days = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 const labels = [['treino','Treino'], ['plano','Plano'], ['hist','Histórico'], ['medidas','Medidas']];
 const measures = ['Peso (kg)', 'Cintura (cm)', 'Abdômen (cm)', 'Peitoral (cm)', 'Pelve alta (cm)', 'Quadril (cm)', 'Braço D (cm)', 'Braço E (cm)', 'Coxa D (cm)', 'Coxa E (cm)', 'Panturrilha D (cm)', 'Panturrilha E (cm)'];
@@ -18,6 +20,10 @@ const preferences = () => read('plan', 'settings') || { phase: 1, mode: 'five' }
 const schedule = () => preferences().mode === 'three' ? [...fullBody, workouts[5]] : workouts;
 const displayDate = value => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(value + 'T12:00:00'));
 
+function templateFor(workout) {
+  return identifyExercises(workout.id, read('plan', workout.id)?.exercises || planFor(workout, preferences().phase));
+}
+
 function sessionFor(date, id) {
   const stored = read('session', date);
   if (stored) return structuredClone(stored);
@@ -25,18 +31,40 @@ function sessionFor(date, id) {
   const day = days[(new Date(date + 'T12:00:00').getDay() + 6) % 7];
   const workout = list.find(w => w.id === id) || list.find(w => w.day === day);
   if (!workout) return null;
-  const template = read('plan', workout.id)?.exercises || planFor(workout, preferences().phase);
+  const template = templateFor(workout);
   return {
     workout: workout.id, title: workout.title, warmup: workout.warmup, complete: false,
-    exercises: template.map(e => ({ ...e, results: Array.from({length:e.sets}, () => ({ done:false, amount:'', kg:'' })) }))
+    exercises: template.map(startExercise)
   };
 }
 
 async function store(kind, entry, payload) {
   const record = { kind, entry, payload };
   if (api.configured) await api.save(record);
-  data.set(kind + '/' + entry, record);
+  remember([record]);
+}
+
+function remember(records) {
+  for (const record of records) data.set(record.kind + '/' + record.entry, record);
   if (!api.configured) localStorage.setItem('fenix-demo', JSON.stringify([...data.values()]));
+}
+
+async function saveCompared(records) {
+  if (api.configured) {
+    await api.saveChanges(records.map(record => ({
+      ...record, expected: read(record.kind, record.entry) ?? null
+    })));
+  }
+  remember(records);
+}
+
+async function saveTemplate(id, before, after) {
+  const today = dateKey();
+  const saved = read('session', today);
+  const current = updateTodaySession(saved, id, before, after);
+  const records = [{ kind: 'plan', entry: id, payload: { ...read('plan', id), exercises: after } }];
+  if (saved && current !== saved) records.push({ kind: 'session', entry: today, payload: current });
+  await saveCompared(records);
 }
 
 function header(title, detail) {
@@ -75,22 +103,58 @@ function workoutScreen() {
         e.results.map((set,j) => '<div class="set"><label class="check"><input type="checkbox" name="done-' + i + '-' + j + '"' + (set.done ? ' checked' : '') + '> Série ' + (j+1) + '</label>' +
           numberInput('amount-' + i + '-' + j, e.unit, set.amount, 1000) +
           (e.unit === 'reps' ? numberInput('kg-' + i + '-' + j, 'kg', set.kg, 1000, '0.01') : '') + '</div>').join('') + '</details>';
-    }).join('') +
+    }).join('') + archivedScreen(session) +
     '<div class="actions"><button type="submit" class="primary" value="save">Salvar séries</button><button type="submit" value="attendance">' + (session.complete ? 'Desmarcar presença' : 'Registrar presença') + '</button></div></form>');
 }
+function archivedScreen(session) {
+  if (!session.archivedExercises?.length) return '';
+  return '<section class="card"><h3>Registros de exercícios substituídos</h3>' +
+    session.archivedExercises.map(item => '<details><summary><strong>' + escape(item.name) +
+    '</strong></summary><ul>' + item.results.map(set => '<li>Série ' + set.number +
+    (set.done ? ' · concluída' : '') + (set.amount !== '' && set.amount != null ? ' · ' + escape(set.amount) + ' ' + escape(item.unit) : '') +
+    (set.kg !== '' && set.kg != null ? ' · ' + escape(set.kg) + ' kg' : '') + '</li>').join('') +
+    '</ul></details>').join('') + '</section>';
+}
+
 let openExercises = new Set([0]);
+
+function exerciseEditor(id, item) {
+  const title = item ? 'Substituir ' + item.name : 'Adicionar exercício';
+  return '<form id="exercise-editor" class="card" data-workout="' + id + '"><h3>' + escape(title) + '</h3>' +
+    '<label>Buscar no catálogo<input type="search" id="catalog-search" autocomplete="off" placeholder="Ex. puxada frontal"></label>' +
+    '<label>Exercício do catálogo<select name="catalog" id="catalog-results">' + catalogOptions('') + '</select></label>' +
+    '<label>Ou digite um exercício personalizado<input name="custom" maxlength="80"></label>' +
+    '<div class="exercise-dosage"><label>Séries<input required type="number" min="1" max="12" name="sets" value="' + (item?.sets ?? 2) + '"></label>' +
+    '<label>Repetições<input required maxlength="9" name="target" placeholder="Ex. 10–12" value="' +
+    escape(item?.unit === 'reps' && /^[0-9– -]+$/.test(item.target) ? item.target : '10–12') + '"></label></div>' +
+    '<div class="actions"><button class="primary" type="submit">Salvar exercício</button>' +
+    button('Cancelar', 'cancel-exercise') + '</div></form>';
+}
+function catalogOptions(query, selected) {
+  const matches = findExercises(query);
+  return options([['', matches.length ? 'Selecione um exercício' : 'Nenhum exercício encontrado'],
+    ...matches.map(name => [name, name])], selected);
+}
 
 function planScreen() {
   const prefs = preferences();
   return header('Plano de treino', 'ROTINA E PROGRESSÃO') +
     '<section class="card"><form id="settings"><label>Rotina<select name="mode">' + options([['five','Cinco dias'],['three','Três dias · corpo inteiro']], prefs.mode) + '</select></label>' +
     '<label>Fase<select name="phase">' + options(Object.entries(phases), prefs.phase) + '</select></label><button type="submit" class="primary">Salvar plano</button></form></section>' +
-    '<p class="muted">As alterações valem para novos registros. Os treinos salvos preservam a ficha original.</p>' +
+    '<p class="muted">Edite os exercícios por dia. Se o treino de hoje já foi iniciado, os registros feitos são preservados.</p>' +
     schedule().map(w => {
-      const e = read('plan', w.id)?.exercises || planFor(w, prefs.phase);
-      return '<details class="card"><summary><strong>' + escape(w.day + ' · ' + w.title) + '</strong></summary><form data-plan="' + w.id + '"><p>' + escape(w.warmup) + '</p>' +
-        e.map((item,i) => '<div class="plan-row"><strong>' + escape(item.name) + '</strong><label>Séries<input required type="number" min="1" max="12" name="s' + i + '" value="' + item.sets + '"></label><label>Meta (' + item.unit + ')<input required maxlength="30" name="t' + i + '" value="' + escape(item.target) + '"></label></div>').join('') +
-        '<button class="primary" type="submit">Salvar ajustes</button>' + (read('plan',w.id)?.exercises ? ' ' + button('Usar metas da fase','reset-plan','data-value="' + w.id + '"') : '') + '</form></details>';
+      const exercises = templateFor(w);
+      return '<details class="card" data-plan-day="' + w.id + '"' + (planOpen === w.id ? ' open' : '') +
+        '><summary><strong>' + escape(w.day + ' · ' + w.title) + '</strong></summary><form data-plan="' + w.id + '"><p>' + escape(w.warmup) + '</p>' +
+        exercises.map((item,i) => '<div class="plan-row"><div><strong>' + escape(item.name) + '</strong>' +
+          button('Substituir', 'replace-exercise', 'class="exercise-replace" data-value="' + w.id + '" data-exercise="' + escape(item.id) +
+            '" aria-label="' + escape('Substituir ' + item.name) + '"') +
+          '</div><label>Séries<input required type="number" min="1" max="12" name="s' + i + '" value="' + item.sets + '"></label><label>Meta (' + escape(item.unit) +
+          ')<input required maxlength="30" name="t' + i + '" value="' + escape(item.target) + '"></label></div>').join('') +
+        '<div class="actions"><button class="primary" type="submit">Salvar ajustes</button>' +
+        button('Adicionar exercício', 'add-exercise', 'data-value="' + w.id + '"') +
+        (read('plan',w.id)?.exercises ? button('Usar metas da fase','reset-plan','data-value="' + w.id + '"') : '') + '</div></form>' +
+        (editor?.workout === w.id ? exerciseEditor(w.id, exercises.find(item => item.id === editor.replacement)) : '') + '</details>';
     }).join('');
 }
 function historyScreen() {
@@ -136,6 +200,15 @@ async function run(action, success) {
     render();
     status.textContent = success;
   } catch (error) {
+    if (error.status === 409) {
+      try {
+        await load();
+        editor = undefined;
+        render();
+        status.textContent = 'O registro mudou em outro acesso. Confira a versão atual e tente novamente.';
+        return;
+      } catch {}
+    }
     if (api.configured && !api.currentUser()) render();
     status.textContent = error.status === 400 ? 'Confira os dados e tente novamente.' : 'A operação falhou. Confira sua conexão e tente novamente.';
   } finally { busy = false; app.inert = false; logout.disabled = false; }
@@ -148,7 +221,20 @@ app.addEventListener('click', e => {
   const target = e.target.closest('[data-action]');
   if (!target || busy) return;
   const { action, value } = target.dataset;
-  if (action === 'nav') { page = value; render(); window.scrollTo(0,0); }
+  if (action === 'nav') {
+    const navigate = () => { page = value; editor = undefined; window.scrollTo(0,0); };
+    const form = value === 'plano' ? document.querySelector('#training') : null;
+    if (form?.dataset.dirty) {
+      const session = collectTraining(form);
+      run(async () => {
+        await saveCompared([{ kind: 'session', entry: selectedDate, payload: session }]);
+        navigate();
+      }, 'Registros do treino salvos.');
+    } else {
+      navigate();
+      render();
+    }
+  }
   if (action === 'date') selectDate(value);
   if (action === 'open-history') { page = 'treino'; selectDate(value); window.scrollTo(0,0); }
   if (action === 'previous' || action === 'next') {
@@ -156,9 +242,47 @@ app.addEventListener('click', e => {
     date.setDate(date.getDate() + (action === 'next' ? 7 : -7));
     selectDate(dateKey(date));
   }
-  if (action === 'reset-plan') run(() => store('plan', value, {}), 'Metas da fase restauradas.');
+  if (action === 'add-exercise' || action === 'replace-exercise') {
+    planOpen = value;
+    editor = { workout: value, replacement: target.dataset.exercise };
+    render();
+    const search = document.querySelector('#catalog-search');
+    search.scrollIntoView({ block: 'center' });
+    search.focus({ preventScroll: true });
+  }
+  if (action === 'cancel-exercise') { editor = undefined; render(); }
+  if (action === 'reset-plan') {
+    const workout = schedule().find(w => w.id === value);
+    const before = templateFor(workout);
+    const defaults = new Map(identifyExercises(value, planFor(workout, preferences().phase)).map(item => [item.id,item]));
+    planOpen = value;
+    run(() => saveTemplate(value, before, before.map(item => defaults.get(item.id) ?? item)), 'Metas da fase restauradas.');
+  }
 });
+app.addEventListener('input', e => {
+  if (e.target.form?.id === 'training') e.target.form.dataset.dirty = 'true';
+  if (e.target.id === 'catalog-search') {
+    const select = document.querySelector('#catalog-results');
+    select.innerHTML = catalogOptions(e.target.value, select.value);
+  }
+  if (e.target.name === 'custom' && e.target.form?.id === 'exercise-editor' && e.target.value.trim()) {
+    e.target.form.elements.catalog.value = '';
+  }
+});
+function collectTraining(form) {
+  const fields = new FormData(form);
+  const session = sessionFor(selectedDate, workoutId);
+  for (const [i,exercise] of session.exercises.entries()) {
+    for (const [j,set] of exercise.results.entries()) {
+      set.done = fields.has('done-' + i + '-' + j);
+      set.amount = fields.get('amount-' + i + '-' + j) || '';
+      set.kg = fields.get('kg-' + i + '-' + j) || '';
+    }
+  }
+  return session;
+}
 app.addEventListener('change', e => {
+  if (e.target.id === 'catalog-results' && e.target.value) e.target.form.elements.custom.value = '';
   if (e.target.id === 'date' && e.target.value) selectDate(e.target.value);
   if (e.target.id === 'workout') { workoutId = e.target.value; openExercises = new Set([0]); render(); }
   if (e.target.name === 'date' && e.target.form?.id === 'measure' && e.target.value) selectDate(e.target.value);
@@ -174,23 +298,32 @@ app.addEventListener('submit', e => {
   if (form.id === 'settings') run(() => store('plan','settings',{ mode:fields.get('mode'), phase:Number(fields.get('phase')) }), 'Plano salvo.');
   if (form.dataset.plan) {
     const id = form.dataset.plan;
-    const workout = schedule().find(w => w.id === id);
-    const template = read('plan',id)?.exercises || planFor(workout,preferences().phase);
-    const exercises = template.map((item,i) => ({ ...item, sets:Number(fields.get('s'+i)), target:fields.get('t'+i).trim() || item.target }));
-    run(() => store('plan',id,{ exercises }), 'Exercícios atualizados.');
+    const before = templateFor(schedule().find(w => w.id === id));
+    const exercises = before.map((item,i) => ({ ...item, sets:Number(fields.get('s'+i)), target:fields.get('t'+i).trim() || item.target }));
+    planOpen = id;
+    run(() => saveTemplate(id, before, exercises), 'Exercícios atualizados.');
+  }
+  if (form.id === 'exercise-editor') {
+    const id = form.dataset.workout;
+    const name = fields.get('custom').trim() || fields.get('catalog');
+    const exercise = newExercise(crypto.randomUUID(), name, Number(fields.get('sets')), fields.get('target'));
+    if (!exercise) {
+      status.textContent = 'Escolha ou digite um exercício e informe as repetições (ex. 10 ou 10–12).';
+      return;
+    }
+    const before = templateFor(schedule().find(w => w.id === id));
+    const replacement = editor.replacement;
+    const after = editExercises(before, replacement, exercise);
+    run(async () => {
+      await saveTemplate(id, before, after);
+      editor = undefined;
+    }, replacement ? 'Exercício substituído.' : 'Exercício adicionado.');
   }
   if (form.id === 'training') {
     openExercises = new Set([...form.querySelectorAll('details[open]')].map(el => Number(el.dataset.exercise)));
-    const session = sessionFor(selectedDate, workoutId);
-    for (const [i,exercise] of session.exercises.entries()) {
-      for (const [j,set] of exercise.results.entries()) {
-        set.done = fields.has('done-' + i + '-' + j);
-        set.amount = fields.get('amount-' + i + '-' + j) || '';
-        set.kg = fields.get('kg-' + i + '-' + j) || '';
-      }
-    }
+    const session = collectTraining(form);
     if (e.submitter?.value === 'attendance') session.complete = !session.complete;
-    run(() => store('session',selectedDate,session), 'Treino salvo.');
+    run(() => saveCompared([{ kind: 'session', entry: selectedDate, payload: session }]), 'Treino salvo.');
   }
   if (form.id === 'measure') {
     const values = measures.map((_,i) => fields.get('m'+i));
