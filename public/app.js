@@ -1,4 +1,4 @@
-import { workouts, fullBody, phases, planFor, dateKey, week, counts, findExercises, identifyExercises, newExercise, editExercises, startExercise, updateTodaySession } from './plan.js';
+import { workouts, fullBody, phases, planFor, dateKey, week, counts, findExercises, illustrationKey, identifyExercises, newExercise, editExercises, startExercise, updateTodaySession } from './plan.js';
 import * as api from './api.js';
 
 const app = document.querySelector('#app');
@@ -11,6 +11,15 @@ let workoutId;
 let busy = false;
 let planOpen;
 let editor;
+const illustrations = new Map();
+const illustrationDialog = document.createElement('dialog');
+illustrationDialog.className = 'illustration-dialog';
+illustrationDialog.setAttribute('aria-labelledby', 'illustration-title');
+illustrationDialog.innerHTML = '<div class="illustration-actions"><button type="button" aria-label="Fechar ilustração">Fechar</button></div>' +
+  '<h2 id="illustration-title"></h2><img alt=""><p>Ilustração do manual do Projeto Fênix.</p>';
+document.body.append(illustrationDialog);
+illustrationDialog.querySelector('button').addEventListener('click', () => illustrationDialog.close());
+illustrationDialog.addEventListener('close', () => illustrationDialog.querySelector('img').removeAttribute('src'));
 const days = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 const labels = [['treino','Treino'], ['plano','Plano'], ['hist','Histórico'], ['medidas','Medidas']];
 const measures = ['Peso (kg)', 'Cintura (cm)', 'Abdômen (cm)', 'Peitoral (cm)', 'Pelve alta (cm)', 'Quadril (cm)', 'Braço D (cm)', 'Braço E (cm)', 'Coxa D (cm)', 'Coxa E (cm)', 'Panturrilha D (cm)', 'Panturrilha E (cm)'];
@@ -99,13 +108,56 @@ function workoutScreen() {
     (!saved ? '<label class="picker">Escolher treino<select id="workout">' + options([['','Treino do dia'],...schedule().map(w => [w.id,w.title])], workoutId) + '</select></label>' : '') +
     (!session ? '' : '<form id="training">' + session.exercises.map((e,i) => {
       const finished = e.results.filter(set => set.done).length;
-      return '<details class="card exercise" ' + (openExercises.has(i) ? 'open' : '') + ' data-exercise="' + i + '"><summary><div><strong>' + escape(e.name) + '</strong><small>' + escape(e.sets + ' × ' + e.target + ' ' + e.unit + (e.rest ? ' · ' + e.rest + ' descanso' : '') + (e.optional ? ' · opcional' : '')) + '</small></div><span class="score">' + finished + '/' + e.sets + '</span></summary>' +
+      const photo = illustrationKey(e.name);
+      const thumbnail = api.currentUser() && photo
+        ? button('<img alt="" width="64" height="48">', 'view-illustration',
+          'class="exercise-thumbnail" data-key="' + photo + '" data-name="' + escape(e.name) +
+          '" hidden aria-label="' + escape('Ampliar ilustração de ' + e.name) + '"')
+        : '';
+      return '<details class="card exercise" ' + (openExercises.has(i) ? 'open' : '') + ' data-exercise="' + i + '"><summary>' + thumbnail + '<div class="exercise-label"><strong>' + escape(e.name) + '</strong><small>' + escape(e.sets + ' × ' + e.target + ' ' + e.unit + (e.rest ? ' · ' + e.rest + ' descanso' : '') + (e.optional ? ' · opcional' : '')) + '</small></div><span class="score">' + finished + '/' + e.sets + '</span></summary>' +
         e.results.map((set,j) => '<div class="set"><label class="check"><input type="checkbox" name="done-' + i + '-' + j + '"' + (set.done ? ' checked' : '') + '> Série ' + (j+1) + '</label>' +
           numberInput('amount-' + i + '-' + j, e.unit, set.amount, 1000) +
           (e.unit === 'reps' ? numberInput('kg-' + i + '-' + j, 'kg', set.kg, 1000, '0.01') : '') + '</div>').join('') + '</details>';
     }).join('') + archivedScreen(session) +
     '<div class="actions"><button type="submit" class="primary" value="save">Salvar séries</button><button type="submit" value="attendance">' + (session.complete ? 'Desmarcar presença' : 'Registrar presença') + '</button></div></form>');
 }
+async function showThumbnails() {
+  const buttons = [...app.querySelectorAll('[data-action="view-illustration"]')];
+  const owner = api.currentUser()?.id;
+  if (!owner || !buttons.length) return;
+  const keys = [...new Set(buttons.map(el => el.dataset.key))].filter(key => !illustrations.has(key));
+  if (keys.length) {
+    try {
+      const rows = await api.exerciseIllustrations(keys);
+      if (api.currentUser()?.id !== owner) return;
+      for (const key of keys) illustrations.set(key, null);
+      for (const row of rows) {
+        if (keys.includes(row.exercise_key) && /^[a-zA-Z0-9+/]+={0,2}$/.test(row.webp_base64)) {
+          illustrations.set(row.exercise_key, 'data:image/webp;base64,' + row.webp_base64);
+        }
+      }
+    } catch { return; }
+  }
+  for (const el of buttons) {
+    const url = illustrations.get(el.dataset.key);
+    if (!el.isConnected || !url) continue;
+    const image = el.querySelector('img');
+    image.src = url;
+    el.hidden = false;
+  }
+}
+
+function openIllustration(target) {
+  const url = illustrations.get(target.dataset.key);
+  if (!url) return;
+  const { name } = target.dataset;
+  illustrationDialog.querySelector('h2').textContent = name;
+  const image = illustrationDialog.querySelector('img');
+  image.alt = 'Ilustração do manual para ' + name;
+  image.src = url;
+  illustrationDialog.showModal();
+}
+
 function archivedScreen(session) {
   if (!session.archivedExercises?.length) return '';
   return '<section class="card"><h3>Registros de exercícios substituídos</h3>' +
@@ -177,6 +229,8 @@ function render() {
   app.setAttribute('aria-busy','false');
   logout.hidden = !api.currentUser();
   if (api.configured && !api.currentUser()) {
+    illustrations.clear();
+    if (illustrationDialog.open) illustrationDialog.close();
     app.innerHTML = header('Entre no Projeto Fênix', 'SEU DIÁRIO DE TREINO') +
       '<form id="login" class="card"><label>E-mail<input name="email" type="email" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit" class="primary">Entrar</button></form>';
     return;
@@ -184,6 +238,7 @@ function render() {
   const content = { treino:workoutScreen, plano:planScreen, hist:historyScreen, medidas:measureScreen }[page]();
   app.innerHTML = (!api.configured ? '<p class="demo">Modo local · Os registros ficam neste navegador.</p>' : '') + content +
     '<nav aria-label="Navegação principal">' + labels.map(([key,label]) => button(label,'nav','data-value="' + key + '"' + (key === page ? ' aria-current="page"' : ''))).join('') + '</nav>';
+  if (page === 'treino') void showThumbnails();
 }
 async function load() {
   const rows = api.configured ? (api.currentUser() ? await api.records() : []) : JSON.parse(localStorage.getItem('fenix-demo') || '[]');
@@ -221,6 +276,11 @@ app.addEventListener('click', e => {
   const target = e.target.closest('[data-action]');
   if (!target || busy) return;
   const { action, value } = target.dataset;
+  if (action === 'view-illustration') {
+    e.preventDefault();
+    openIllustration(target);
+    return;
+  }
   if (action === 'nav') {
     const navigate = () => { page = value; editor = undefined; window.scrollTo(0,0); };
     const form = value === 'plano' ? document.querySelector('#training') : null;
