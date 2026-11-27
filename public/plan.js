@@ -79,6 +79,89 @@ export function week(date) {
   });
 }
 export function counts(session) {
-  const sets = session.exercises.flatMap(e => e.results);
+  const sets = [...session.exercises, ...(session.archivedExercises ?? [])].flatMap(e => e.results);
   return [sets.filter(set => set.done).length, sets.length];
+}
+
+export const catalog = [
+  'Abdominal na máquina', 'Abdominal infra', 'Agachamento frontal', 'Agachamento goblet',
+  'Agachamento livre', 'Agachamento no Smith', 'Afundo com halteres', 'Barra fixa',
+  'Cadeira abdutora', 'Cadeira adutora', 'Cadeira extensora', 'Cadeira flexora',
+  'Crucifixo com halteres', 'Crucifixo inverso', 'Desenvolvimento com halteres',
+  'Desenvolvimento na máquina', 'Elevação frontal', 'Elevação lateral', 'Elevação pélvica',
+  'Encolhimento com halteres', 'Face pull', 'Hack squat', 'Leg press 45°',
+  'Leg press horizontal', 'Levantamento terra', 'Levantamento terra romeno', 'Mesa flexora',
+  'Panturrilha em pé', 'Panturrilha sentada', 'Peck deck', 'Pulldown com corda',
+  'Puxada frontal', 'Puxada neutra', 'Remada baixa', 'Remada cavalinho', 'Remada curvada',
+  'Remada unilateral', 'Rosca direta', 'Rosca martelo', 'Rosca Scott', 'Stiff com halteres',
+  'Supino inclinado', 'Supino máquina', 'Supino reto com barra', 'Supino reto com halteres',
+  'Tríceps corda na polia', 'Tríceps francês', 'Tríceps testa'
+];
+
+const searchText = value => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+export function findExercises(query) {
+  const words = searchText(query).split(/\s+/);
+  return catalog.filter(name => words.every(word => searchText(name).includes(word)));
+}
+
+export function identifyExercises(workout, exercises) {
+  return exercises.map((exercise, index) => ({
+    ...exercise, id: exercise.id ?? workout + ':' + index
+  }));
+}
+
+export function newExercise(id, name, sets, target) {
+  const cleanName = name.trim();
+  const repetitions = target.trim().match(/^([1-9]\d{0,2})(?:\s*[-–]\s*([1-9]\d{0,2}))?$/);
+  if (!cleanName || cleanName.length > 80 || !Number.isInteger(sets) ||
+      sets < 1 || sets > 12 || !repetitions ||
+      (repetitions[2] && Number(repetitions[2]) < Number(repetitions[1]))) return null;
+  return {
+    id, name: cleanName, sets, target: repetitions.slice(1).filter(Boolean).join('–'),
+    unit: 'reps', rest: '', optional: false
+  };
+}
+
+export function editExercises(exercises, replacementId, exercise) {
+  return replacementId
+    ? exercises.map(item => item.id === replacementId ? exercise : item)
+    : [...exercises, exercise];
+}
+
+const blankSet = () => ({ done: false, amount: '', kg: '' });
+const hasResult = set => set.done || (set.amount !== '' && set.amount != null) ||
+  (set.kg !== '' && set.kg != null) ||
+  Object.keys(set).some(key => !['done','amount','kg'].includes(key));
+
+export function startExercise(exercise) {
+  return { ...exercise, results: Array.from({ length: exercise.sets }, blankSet) };
+}
+
+export function updateTodaySession(session, workout, before, after) {
+  if (session?.workout !== workout) return session;
+  const previous = new Map(before.map(item => [item.id, item]));
+  const nextIds = new Set(after.map(item => item.id));
+  const active = identifyExercises(workout, session.exercises);
+  const recorded = new Map(active.map(item => [item.id, item]));
+  const archived = [...(session.archivedExercises ?? [])];
+
+  for (const item of active) {
+    if (nextIds.has(item.id)) continue;
+    const results = item.results.flatMap((set, index) => hasResult(set) ? [{ ...set, number: index + 1 }] : []);
+    if (results.length) archived.push({ ...item, results, sets: results.length });
+  }
+
+  const exercises = after.map(item => {
+    const saved = recorded.get(item.id);
+    if (!saved) return startExercise(item);
+    const old = previous.get(item.id);
+    if (old?.sets === item.sets && old?.target === item.target) return saved;
+    const lastRecorded = saved.results.findLastIndex(hasResult) + 1;
+    const length = Math.max(item.sets, lastRecorded);
+    return {
+      ...saved, ...item, sets: length,
+      results: Array.from({ length }, (_, index) => saved.results[index] ?? blankSet())
+    };
+  });
+  return { ...session, exercises, archivedExercises: archived };
 }

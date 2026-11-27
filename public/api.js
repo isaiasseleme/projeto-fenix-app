@@ -64,3 +64,10 @@ export async function save(record) {
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }
   });
 }
+
+export async function saveChanges(changes) {
+  const accessToken = await token();
+  await request('/rest/v1/rpc/save_fenix_changes', {
+    method: 'POST', token: accessToken, body: { p_changes: changes }
+  });
+}
