@@ -1,4 +1,4 @@
-const cacheName = 'fenix-shell-v2';
+const cacheName = 'fenix-shell-v3';
 const shell = ['./', './index.html', './app.js', './plan.js', './api.js', './config.js', './style.css', './manifest.webmanifest', './fenix.png', './fenix-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(shell)));
