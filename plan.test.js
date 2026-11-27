@@ -18,7 +18,7 @@ test('a contagem de séries é independente da presença', () => {
   assert.deepEqual(counts({ complete: false, exercises: [{ results: [{done:true}, {done:false}] }] }), [1,2]);
 });
 
-import { findExercises, identifyExercises, newExercise, editExercises, startExercise, updateTodaySession } from './public/plan.js';
+import { findExercises, illustrationKey, identifyExercises, newExercise, editExercises, startExercise, updateTodaySession } from './public/plan.js';
 
 test('busca sem acento, inclusão pelo catálogo e exercício personalizado', () => {
   const name = findExercises('TRICEPS CORDA')[0];
@@ -72,4 +72,14 @@ test('incluir e reduzir séries preserva todas as séries com dados', () => {
   assert.equal(updated.exercises[0].results.length,3);
   assert.equal(updated.exercises[0].results[2].amount,'8');
   assert.deepEqual(updated.exercises.at(-1),startExercise(extra));
+});
+
+test('seleciona a imagem da variação correspondente sem confundir aparelhos', () => {
+  assert.equal(illustrationKey(' TRÍCEPS CORDA na polia '), 'triceps-corda');
+  assert.equal(illustrationKey('Supino máquina ou halteres'), 'supino-maquina');
+  assert.equal(illustrationKey('Abdominal na máquina'), 'abdominal-maquina');
+  assert.equal(illustrationKey('Crunch na polia ou abdominal máquina'), 'crunch-polia');
+  assert.equal(illustrationKey('Remada no aparelho personalizado'), null);
+  assert.notEqual(illustrationKey('Prancha'), illustrationKey('Prancha lateral'));
+  assert.ok([...workouts, ...fullBody].every(w => w.exercises.every(e => illustrationKey(e.name))));
 });
